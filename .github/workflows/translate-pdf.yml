@@ -1,0 +1,83 @@
+name: Translate PDF with BabelDOC
+
+on:
+  repository_dispatch:
+    types: [translate-pdf]
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pdf2zh-next
+        run: pip install --upgrade pdf2zh-next
+
+      - name: Download PDF from Google Apps Script
+        env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          BRIDGE_SECRET: ${{ secrets.BRIDGE_SECRET }}
+          FILE_ID: ${{ github.event.client_payload.fileId }}
+        run: |
+          python3 - << 'EOF'
+          import base64, json, os, urllib.request, urllib.parse
+
+          params = urllib.parse.urlencode({
+              "secret": os.environ["BRIDGE_SECRET"],
+              "fileId": os.environ["FILE_ID"]
+          })
+          url = f"{os.environ['APPS_SCRIPT_URL']}?{params}"
+          req = urllib.request.urlopen(url)
+          data = json.loads(req.read().decode("utf-8"))
+
+          if "error" in data:
+              raise RuntimeError(data["error"])
+
+          with open("input.pdf", "wb") as f:
+              f.write(base64.b64decode(data["base64"]))
+          print(f"Downloaded {data['fileName']} ({os.path.getsize('input.pdf')} bytes)")
+          EOF
+
+      - name: Run pdf2zh-next (Layout-Preserving Translation)
+        run: |
+          mkdir -p ./out
+          pdf2zh_next input.pdf --lang-in id --lang-out en --google --no-dual --output ./out
+
+      - name: Upload Translated PDF Back to Google Drive
+        env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          BRIDGE_SECRET: ${{ secrets.BRIDGE_SECRET }}
+          FILE_ID: ${{ github.event.client_payload.fileId }}
+          LAST_UPDATED: ${{ github.event.client_payload.lastUpdated }}
+          OUTPUT_NAME: ${{ github.event.client_payload.outputName }}
+        run: |
+          python3 - << 'EOF'
+          import base64, glob, json, os, urllib.request
+
+          pdfs = sorted(glob.glob("./out/**/*.pdf", recursive=True))
+          if not pdfs:
+              raise FileNotFoundError("No translated PDF generated in ./out")
+
+          with open(pdfs[0], "rb") as f:
+              encoded = base64.b64encode(f.read()).decode("utf-8")
+
+          payload = json.dumps({
+              "secret": os.environ["BRIDGE_SECRET"],
+              "fileId": os.environ["FILE_ID"],
+              "lastUpdated": int(os.environ["LAST_UPDATED"]),
+              "outputName": os.environ["OUTPUT_NAME"],
+              "base64": encoded
+          }).encode("utf-8")
+
+          req = urllib.request.Request(
+              os.environ["APPS_SCRIPT_URL"],
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+          with urllib.request.urlopen(req) as res:
+              print("Apps Script response:", res.read().decode("utf-8"))
+          EOF
