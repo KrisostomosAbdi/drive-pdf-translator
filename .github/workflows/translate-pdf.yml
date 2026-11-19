@@ -44,14 +44,15 @@ jobs:
       - name: Run pdf2zh-next (Layout-Preserving Translation)
         run: |
           mkdir -p ./out
-          # Try free Google Translate first
           pdf2zh_next input.pdf --lang-in id --lang-out en --google --no-dual --output ./out || true
 
-          # If Google blocked the cloud IP and produced no output PDF, fall back to free Bing Translate
           if [ -z "$(find . -maxdepth 3 -name '*.pdf' ! -name 'input.pdf')" ]; then
             echo "Google translator produced no output; retrying with Bing translator..."
-            pdf2zh_next input.pdf --lang-in id --lang-out en --bing --no-dual --output ./out
+            pdf2zh_next input.pdf --lang-in id --lang-out en --bing --no-dual --output ./out || true
           fi
+
+          echo "=== Workspace files after translation ==="
+          find . -maxdepth 3 -not -path '*/.*'
 
       - name: Upload Translated PDF Back to Google Drive
         env:
@@ -64,18 +65,17 @@ jobs:
           python3 - << 'EOF'
           import base64, glob, json, os, urllib.request
 
-          # Search both ./out and root workspace for any generated PDF other than input.pdf
           candidates = [
               p for p in glob.glob("./**/*.pdf", recursive=True)
               if os.path.basename(p) != "input.pdf"
           ]
           if not candidates:
               raise FileNotFoundError(
-                  "No translated PDF generated. Check the 'Run pdf2zh-next' step log above for details."
+                  "No translated PDF found anywhere. Expand 'Run pdf2zh-next' above to see the tool output."
               )
 
           translated_path = sorted(candidates)[0]
-          print(f"Found translated PDF: {translated_path} ({os.path.getsize(translated_path)} bytes)")
+          print(f"Uploading {translated_path} ({os.path.getsize(translated_path)} bytes)...")
 
           with open(translated_path, "rb") as f:
               encoded = base64.b64encode(f.read()).decode("utf-8")
